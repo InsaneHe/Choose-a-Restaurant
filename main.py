@@ -18,6 +18,8 @@ restaurants = [
     {"name": "俄士厨房", "type": "正餐", "detail": "俄餐"},
     {"name": "东大门一头猪", "type": "烧烤", "detail": "韩餐"},
     {"name": "厚贞日式烤肉", "type": "烧烤", "detail": "日餐"},
+    {"name": "牛new寿喜烧", "type": "自助", "detail": "正餐"},
+    {"name": "东盛炭烤自助料理", "type": "自助", "detail": "正餐"},
     {"name": "安又胖韩国烤肉", "type": "烧烤", "detail": "韩餐"}
 ]
 

@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "name": "合成餐厅甲",
+    "type": "正餐",
+    "detail": "合成菜系",
+    "address": "上海市合成餐厅甲地址",
+    "longitude": 121.5,
+    "latitude": 31.25,
+    "amap_poi_id": "DEST-A",
+    "dianping_url": null,
+    "location_status": "manual_confirmed"
+  },
+  {
+    "id": 2,
+    "name": "合成餐厅乙",
+    "type": "正餐",
+    "detail": "合成菜系",
+    "address": "上海市合成餐厅乙地址",
+    "longitude": 121.51,
+    "latitude": 31.25,
+    "amap_poi_id": "DEST-B",
+    "dianping_url": null,
+    "location_status": "manual_confirmed"
+  }
+]

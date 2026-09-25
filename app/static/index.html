@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>餐厅选择</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">CHOOSE RESTAURANT</p>
+        <h1>今天去哪里吃？</h1>
+        <p class="intro">
+          名单直接读取并保存到 <code>data/restaurants.json</code>。同名分店可以分别保留，想不出来时就交给随机数。
+        </p>
+      </header>
+
+      <p id="feedback" class="feedback" role="status" aria-live="polite" hidden></p>
+
+      <div class="workspace">
+        <section class="editor-panel" aria-labelledby="editor-heading">
+          <p class="panel-kicker">MANAGE</p>
+          <h2 id="editor-heading">添加餐厅</h2>
+          <form id="restaurant-form" novalidate>
+            <input id="restaurant-id" type="hidden" />
+            <label for="name">名称</label>
+            <input id="name" name="name" autocomplete="off" placeholder="例如：鼎泰豐" />
+
+            <div class="field-row">
+              <div>
+                <label for="type">类型</label>
+                <input id="type" name="type" autocomplete="off" placeholder="正餐" />
+              </div>
+              <div>
+                <label for="detail">菜系</label>
+                <input id="detail" name="detail" autocomplete="off" placeholder="台菜" />
+              </div>
+            </div>
+
+            <label for="dianping-url">大众点评商户链接（可选）</label>
+            <input
+              id="dianping-url"
+              name="dianping_url"
+              type="url"
+              inputmode="url"
+              placeholder="https://www.dianping.com/shop/..."
+            />
+            <p class="field-help">仅校验并保存 HTTPS 商户链接，不读取网页或自动识别门店。</p>
+
+            <div class="form-actions">
+              <button id="save-button" class="button primary" type="submit">添加到名单</button>
+              <button id="cancel-button" class="button quiet" type="button" hidden>取消编辑</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="random-panel" aria-labelledby="random-heading">
+          <p class="panel-kicker">LUCKY DRAW</p>
+          <h2 id="random-heading">随机选一家</h2>
+          <p>从当前完整名单中等概率抽取一个 <strong>1～N</strong> 的编号。</p>
+          <button id="random-button" class="button random-button" type="button">开始抽签</button>
+          <div id="random-result" class="random-result" aria-live="polite" hidden>
+            <p class="random-number"><span id="random-number"></span><small> / <span id="random-total"></span></small></p>
+            <h3 id="random-name"></h3>
+            <p id="random-type"></p>
+          </div>
+        </section>
+      </div>
+
+      <section class="map-section" aria-labelledby="map-heading">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">SHANGHAI MAP</p>
+            <h2 id="map-heading">门店定位与附近交通</h2>
+          </div>
+          <button id="resolve-all-button" class="button quiet" type="button">批量尝试自动定位</button>
+        </div>
+        <p id="map-status" class="map-status" aria-live="polite">正在检查地图配置…</p>
+        <div id="batch-results" class="batch-results" aria-live="polite" hidden></div>
+
+        <div class="map-layout">
+          <div id="map-container" class="map-container" aria-label="上海餐厅地图">
+            <p id="map-placeholder">地图配置检查中</p>
+          </div>
+
+          <aside class="location-panel" aria-labelledby="location-panel-heading">
+            <h3 id="location-panel-heading">选择一家待定位餐厅</h3>
+            <p id="location-hint">从下方名单点击“定位 / 更正”，再搜索高德候选或在地图点选。</p>
+
+            <form id="place-search-form" class="place-search-form" hidden>
+              <label for="place-query">上海门店关键词</label>
+              <div class="inline-field">
+                <input id="place-query" autocomplete="off" />
+                <button class="button primary" type="submit">搜索</button>
+              </div>
+            </form>
+            <div id="place-candidates" class="place-candidates" aria-live="polite"></div>
+
+            <form id="manual-location-form" hidden>
+              <label for="location-address">确认地址</label>
+              <input id="location-address" autocomplete="off" placeholder="请输入可核对的上海地址" />
+              <div class="field-row">
+                <div>
+                  <label for="location-longitude">经度</label>
+                  <input id="location-longitude" inputmode="decimal" placeholder="121.47" />
+                </div>
+                <div>
+                  <label for="location-latitude">纬度</label>
+                  <input id="location-latitude" inputmode="decimal" placeholder="31.23" />
+                </div>
+              </div>
+              <input id="location-poi-id" type="hidden" />
+              <p class="field-help">在地图点选或从候选中选择后保存；人工确认不会被后续自动搜索覆盖。</p>
+              <button class="button primary" type="submit">保存人工确认位置</button>
+            </form>
+
+            <div id="nearby-transit" class="nearby-transit" aria-live="polite"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="group-section" aria-labelledby="group-heading">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">MEET HALFWAY</p>
+            <h2 id="group-heading">多人公共交通排名</h2>
+          </div>
+          <button id="add-participant-button" class="button quiet" type="button">添加参与者</button>
+        </div>
+        <p class="group-intro">
+          至少两人各自搜索并确认上海出发地。排名按所有人的公共交通总耗时、最慢者耗时、餐厅 ID 依次排序。
+        </p>
+        <div id="participants" class="participants"></div>
+        <div class="group-actions">
+          <button id="rank-button" class="button primary" type="button">计算完整排名</button>
+          <button id="group-random-button" class="button quiet" type="button" disabled>从本次排名随机</button>
+        </div>
+        <p id="group-status" class="group-status" aria-live="polite">
+          请先确认至少两名参与者的上海出发地。
+        </p>
+        <div id="group-random-result" class="group-random-result" aria-live="polite" hidden></div>
+        <div id="group-results" class="group-results" aria-live="polite" hidden>
+          <div id="ranking-list" class="ranking-list"></div>
+          <div id="excluded-list" class="excluded-list"></div>
+        </div>
+      </section>
+
+      <section class="list-section" aria-labelledby="restaurant-heading">
+        <div class="section-heading">
+          <h2 id="restaurant-heading">餐厅名单</h2>
+          <span id="count" class="count" aria-live="polite">正在读取…</span>
+        </div>
+        <div id="restaurants" class="restaurant-grid" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

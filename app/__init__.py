@@ -1,0 +1,1 @@
+"""ChooseRestaurant application package."""

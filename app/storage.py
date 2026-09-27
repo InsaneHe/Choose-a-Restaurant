@@ -7,11 +7,12 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from app.dianping import DianpingInputError, normalize_dianping_url
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +35,8 @@ REQUIRED_FIELDS = frozenset(
 LOCATION_STATUSES = frozenset(
     {"pending_location", "auto_resolved", "manual_confirmed"}
 )
-UPDATABLE_FIELDS = REQUIRED_FIELDS - {"id"}
+SELECTION_STATUSES = frozenset({"active", "archived"})
+UPDATABLE_FIELDS = (REQUIRED_FIELDS - {"id"}) | {"tags"}
 LOCATION_IDENTITY_FIELDS = frozenset({"name", "address", "amap_poi_id"})
 _WRITE_LOCK = threading.Lock()
 
@@ -61,6 +63,12 @@ class RestaurantSnapshot:
     version: str
 
 
+@dataclass(frozen=True)
+class RestaurantImportResult:
+    count: int
+    backup_path: Path
+
+
 def _data_error(path: Path, message: str) -> RestaurantDataError:
     return RestaurantDataError(f"餐厅数据文件 {path} 无效：{message}")
 
@@ -80,30 +88,12 @@ def _validate_dianping_url(value: Any, index: int, path: Path) -> None:
         raise _data_error(path, f"第 {index} 条记录的 dianping_url 必须是字符串或 null")
 
     try:
-        parsed = urlsplit(value)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        port = parsed.port
-    except ValueError as exc:
-        raise _data_error(path, f"第 {index} 条记录的 dianping_url 格式无效") from exc
-
-    is_dianping_host = host == "dianping.com" or host.endswith(".dianping.com")
-    merchant_prefixes = ("/shop/", "/shopshare/")
-    is_merchant_path = any(
-        parsed.path.startswith(prefix) and len(parsed.path) > len(prefix)
-        for prefix in merchant_prefixes
-    )
-    if (
-        parsed.scheme.lower() != "https"
-        or not is_dianping_host
-        or not is_merchant_path
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-    ):
+        normalize_dianping_url(value)
+    except DianpingInputError as exc:
         raise _data_error(
             path,
-            f"第 {index} 条记录的 dianping_url 必须是大众点评 HTTPS 商户链接",
-        )
+            f"第 {index} 条记录的 dianping_url 必须是大众点评 HTTPS 商户链接：{exc}",
+        ) from exc
 
 
 def _validate_coordinate(
@@ -123,6 +113,28 @@ def _validate_coordinate(
         raise _data_error(
             path, f"第 {index} 条记录的 {field} 必须在 {lower} 到 {upper} 之间"
         )
+
+
+def _normalize_tags(value: Any, index: int, path: Path) -> list[str]:
+    if not isinstance(value, list):
+        raise _data_error(path, f"第 {index} 条记录的 tags 必须是字符串数组")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for tag_index, item in enumerate(value, start=1):
+        if not isinstance(item, str):
+            raise _data_error(
+                path, f"第 {index} 条记录的第 {tag_index} 个标签必须是字符串"
+            )
+        tag = item.strip()
+        if not tag:
+            raise _data_error(
+                path, f"第 {index} 条记录的第 {tag_index} 个标签不能为空"
+            )
+        if tag not in seen:
+            seen.add(tag)
+            normalized.append(tag)
+    return normalized
 
 
 def _validate_record(
@@ -184,6 +196,17 @@ def _validate_record(
     ):
         raise _data_error(path, f"第 {index} 条自动定位记录必须包含高德 POI ID")
 
+    selection_status = record.get("selection_status", "active")
+    if selection_status not in SELECTION_STATUSES:
+        allowed = ", ".join(sorted(SELECTION_STATUSES))
+        raise _data_error(
+            path, f"第 {index} 条记录的 selection_status 必须是：{allowed}"
+        )
+    # V1 files stay byte-for-byte unchanged on read while callers receive the
+    # V2 default explicitly. A later user-requested write persists the default.
+    record["selection_status"] = selection_status
+    record["tags"] = _normalize_tags(record.get("tags", []), index, path)
+
     return record
 
 
@@ -244,6 +267,71 @@ def load_restaurants(path: Path | str = DEFAULT_DATA_PATH) -> list[dict[str, Any
     return load_restaurant_snapshot(path).restaurants
 
 
+def import_restaurants_json(
+    text: str,
+    path: Path | str = DEFAULT_DATA_PATH,
+    *,
+    backup_dir: Path | str | None = None,
+) -> RestaurantImportResult:
+    """Validate imported JSON, back up the target, and atomically replace it."""
+
+    if not isinstance(text, str):
+        raise RestaurantDataError("导入内容必须是 JSON 文本")
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise RestaurantDataError("导入内容必须可编码为 UTF-8") from exc
+    if len(encoded) > 5 * 1024 * 1024:
+        raise RestaurantDataError("导入文件超过 5 MiB 限制")
+
+    data_path = Path(path)
+    imported = _decode_restaurants(encoded, data_path)
+    snapshot = load_restaurant_snapshot(data_path)
+    destination = Path(backup_dir) if backup_dir is not None else data_path.parent / "backups"
+
+    temporary_path: Path | None = None
+    backup_path: Path | None = None
+    with _WRITE_LOCK:
+        try:
+            current_raw = _read_bytes(data_path)
+            current_version = hashlib.sha256(current_raw).hexdigest()
+            if current_version != snapshot.version:
+                raise RestaurantConflictError(
+                    "餐厅数据文件在导入确认前已被修改；导入已取消，请刷新后重试"
+                )
+
+            destination.mkdir(parents=True, exist_ok=True)
+            backup_path = destination / f"restaurants-before-import-{time.time_ns()}.json"
+            with backup_path.open("xb") as backup_file:
+                backup_file.write(current_raw)
+                backup_file.flush()
+                os.fsync(backup_file.fileno())
+
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=data_path.parent,
+                prefix=f".{data_path.name}.",
+                suffix=".import.tmp",
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "wb") as temporary_file:
+                temporary_file.write(encoded)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, data_path)
+            temporary_path = None
+        except RestaurantDataError:
+            raise
+        except OSError as exc:
+            raise RestaurantDataError(f"无法导入餐厅数据：{exc}") from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    if backup_path is None:
+        raise RestaurantDataError("导入未能生成备份")
+    return RestaurantImportResult(len(imported), backup_path)
+
+
 def save_restaurants(
     restaurants: Sequence[Mapping[str, Any]],
     expected_version: str,
@@ -301,6 +389,8 @@ def create_restaurant(
     detail: str,
     dianping_url: str | None = None,
     path: Path | str = DEFAULT_DATA_PATH,
+    *,
+    tags: list[str] | None = None,
 ) -> dict[str, Any]:
     snapshot = load_restaurant_snapshot(path)
     new_id = max((record["id"] for record in snapshot.restaurants), default=0) + 1
@@ -315,6 +405,12 @@ def create_restaurant(
         "amap_poi_id": None,
         "dianping_url": dianping_url,
         "location_status": "pending_location",
+        "selection_status": "active",
+        "tags": _normalize_tags(
+            tags if tags is not None else [],
+            len(snapshot.restaurants) + 1,
+            Path(path),
+        ),
     }
     updated = [*snapshot.restaurants, new_record]
     save_restaurants(updated, snapshot.version, path)
@@ -345,11 +441,17 @@ def update_restaurant(
     if target_index is None:
         raise RestaurantNotFoundError(f"未找到餐厅 id {restaurant_id}")
 
+    normalized_changes = dict(changes)
+    if "tags" in normalized_changes:
+        normalized_changes["tags"] = _normalize_tags(
+            normalized_changes["tags"], target_index + 1, Path(path)
+        )
+
     original = snapshot.restaurants[target_index]
-    updated_record = {**original, **changes}
+    updated_record = {**original, **normalized_changes}
     changed_identity_fields = {
         field
-        for field in LOCATION_IDENTITY_FIELDS & changes.keys()
+        for field in LOCATION_IDENTITY_FIELDS & normalized_changes.keys()
         if updated_record[field] != original[field]
     }
     if changed_identity_fields:
@@ -357,13 +459,19 @@ def update_restaurant(
         updated_record["latitude"] = None
         updated_record["location_status"] = "pending_location"
         if "name" in changed_identity_fields:
-            if "address" not in changes:
+            if "address" not in normalized_changes:
                 updated_record["address"] = None
-            if "amap_poi_id" not in changes:
+            if "amap_poi_id" not in normalized_changes:
                 updated_record["amap_poi_id"] = None
-        if "address" in changed_identity_fields and "amap_poi_id" not in changes:
+        if (
+            "address" in changed_identity_fields
+            and "amap_poi_id" not in normalized_changes
+        ):
             updated_record["amap_poi_id"] = None
-        if "amap_poi_id" in changed_identity_fields and "address" not in changes:
+        if (
+            "amap_poi_id" in changed_identity_fields
+            and "address" not in normalized_changes
+        ):
             updated_record["address"] = None
 
     updated = list(snapshot.restaurants)
@@ -388,6 +496,40 @@ def delete_restaurant(
     ]
     save_restaurants(updated, snapshot.version, path)
     return deleted
+
+
+def set_restaurant_selection_status(
+    restaurant_id: int,
+    selection_status: str,
+    path: Path | str = DEFAULT_DATA_PATH,
+) -> dict[str, Any]:
+    """Archive or restore one restaurant without changing any other field."""
+
+    snapshot = load_restaurant_snapshot(path)
+    if selection_status not in SELECTION_STATUSES:
+        allowed = ", ".join(sorted(SELECTION_STATUSES))
+        raise RestaurantDataError(f"selection_status 必须是：{allowed}")
+
+    target_index = next(
+        (
+            index
+            for index, record in enumerate(snapshot.restaurants)
+            if record["id"] == restaurant_id
+        ),
+        None,
+    )
+    if target_index is None:
+        raise RestaurantNotFoundError(f"未找到餐厅 id {restaurant_id}")
+
+    current = snapshot.restaurants[target_index]
+    if current["selection_status"] == selection_status:
+        return current
+
+    updated_record = {**current, "selection_status": selection_status}
+    updated = list(snapshot.restaurants)
+    updated[target_index] = updated_record
+    save_restaurants(updated, snapshot.version, path)
+    return updated_record
 
 
 def set_restaurant_location(

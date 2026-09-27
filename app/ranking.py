@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from app.location_service import resolve_pending_restaurants
 from app.map_provider import MapProvider, MapProviderError, PublicTransitRoute
-from app.selection import choose_restaurant
+from app.selection import active_restaurants, choose_restaurant
 from app.storage import DEFAULT_DATA_PATH, load_restaurant_snapshot
 
 
@@ -100,6 +100,7 @@ def rank_restaurants(
     """Rank every reliably located restaurant; never substitute missing routes."""
 
     checked_participants = validate_participants(participants)
+    eligible_restaurants = active_restaurants(restaurants)
     ranked: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     route_request_count = 0
@@ -107,7 +108,7 @@ def rank_restaurants(
     consecutive_service_errors = 0
     route_checks_stopped = False
 
-    for restaurant in restaurants:
+    for restaurant in eligible_restaurants:
         restaurant_view = _restaurant_view(restaurant)
         if (
             restaurant["location_status"] not in {"auto_resolved", "manual_confirmed"}
@@ -203,10 +204,10 @@ def rank_restaurants(
         "coverage_complete": coverage_complete,
         "route_request_count": route_request_count,
         "service_error_count": service_error_count,
-        "restaurant_count": len(restaurants),
+        "restaurant_count": len(eligible_restaurants),
         "located_count": sum(
             1
-            for item in restaurants
+            for item in eligible_restaurants
             if item["location_status"] in {"auto_resolved", "manual_confirmed"}
             and item["longitude"] is not None
             and item["latitude"] is not None
@@ -223,9 +224,17 @@ def perform_group_ranking(
 
     checked_participants = validate_participants(participants)
     before = load_restaurant_snapshot(path)
+    before_active = active_restaurants(before.restaurants)
     location_results: list[dict[str, Any]] = []
-    if any(item["location_status"] == "pending_location" for item in before.restaurants):
-        location_results = resolve_pending_restaurants(provider, path)
+    pending_active_ids = {
+        item["id"]
+        for item in before_active
+        if item["location_status"] == "pending_location"
+    }
+    if pending_active_ids:
+        location_results = resolve_pending_restaurants(
+            provider, path, restaurant_ids=pending_active_ids
+        )
 
     after = load_restaurant_snapshot(path)
 

@@ -38,7 +38,35 @@
               </div>
             </div>
 
-            <label for="dianping-url">大众点评商户链接（可选）</label>
+            <label for="tag-input">分类标签（可选）</label>
+            <div class="tag-entry">
+              <input id="tag-input" autocomplete="off" placeholder="例如：总店" />
+              <button id="add-tag-button" class="button quiet" type="button">添加标签</button>
+            </div>
+            <div id="tag-editor" class="tag-editor" aria-live="polite"></div>
+            <p class="field-help">每次添加一个标签；首尾空白会被去除，完全相同的标签只保留一次。</p>
+
+            <label for="dianping-share-input">大众点评分享（可选）</label>
+            <textarea
+              id="dianping-share-input"
+              maxlength="8000"
+              rows="6"
+              placeholder="粘贴 App 整段分享文字，或 HTTPS 商户链接"
+            ></textarea>
+            <div class="share-actions">
+              <button id="parse-dianping-button" class="button quiet" type="button">解析并预览</button>
+            </div>
+            <div id="dianping-preview" class="share-preview" aria-live="polite" hidden>
+              <h3>解析预览</h3>
+              <p><strong>名称建议：</strong><span id="dianping-preview-name"></span></p>
+              <p><strong>确认链接：</strong><span id="dianping-preview-url"></span></p>
+              <p><strong>地址线索：</strong><span id="dianping-preview-address"></span></p>
+              <p class="field-help">地址仅用于人工核对，不会保存为已确认位置；保存后仍须按高德候选确认具体分店。</p>
+              <button id="use-dianping-button" class="button quiet" type="button">采用名称和链接</button>
+            </div>
+            <p class="field-help">只做本地解析，不访问点评网页、短链或任意输入地址；“总店”等名称文字不会自动生成标签。</p>
+
+            <label for="dianping-url">最终确认的点评商户链接（可选）</label>
             <input
               id="dianping-url"
               name="dianping_url"
@@ -46,7 +74,7 @@
               inputmode="url"
               placeholder="https://www.dianping.com/shop/..."
             />
-            <p class="field-help">仅校验并保存 HTTPS 商户链接，不读取网页或自动识别门店。</p>
+            <p class="field-help">可编辑后保存；仅接受允许的 HTTPS 点评商户链接。只有链接时仍须手工填写名称。</p>
 
             <div class="form-actions">
               <button id="save-button" class="button primary" type="submit">添加到名单</button>
@@ -58,7 +86,7 @@
         <section class="random-panel" aria-labelledby="random-heading">
           <p class="panel-kicker">LUCKY DRAW</p>
           <h2 id="random-heading">随机选一家</h2>
-          <p>从当前完整名单中等概率抽取一个 <strong>1～N</strong> 的编号。</p>
+          <p>从当前可选择餐厅中等概率抽取一个 <strong>1～N</strong> 的编号；档案中的餐厅不参与。</p>
           <button id="random-button" class="button random-button" type="button">开始抽签</button>
           <div id="random-result" class="random-result" aria-live="polite" hidden>
             <p class="random-number"><span id="random-number"></span><small> / <span id="random-total"></span></small></p>
@@ -67,6 +95,38 @@
           </div>
         </section>
       </div>
+
+      <section class="runtime-section" aria-labelledby="runtime-heading">
+        <p class="panel-kicker">LOCAL DATA &amp; SETTINGS</p>
+        <h2 id="runtime-heading">本机数据与高德配置</h2>
+        <p id="runtime-mode" class="status-line">正在读取运行模式……</p>
+        <p class="path-line"><strong>当前唯一名单：</strong><span id="runtime-data-path"></span></p>
+        <div class="runtime-actions">
+          <button id="open-data-directory-button" class="button quiet" type="button">打开数据目录</button>
+        </div>
+
+        <div class="settings-grid">
+          <div>
+            <h3>导入自己的名单</h3>
+            <p class="field-help">导入前会完整校验 JSON，并自动备份当前名单；无效文件不会覆盖现有数据。</p>
+            <input id="restaurant-import-file" type="file" accept="application/json,.json" />
+            <button id="import-restaurants-button" class="button quiet" type="button">验证、备份并导入</button>
+            <p id="import-status" class="status-line" aria-live="polite"></p>
+          </div>
+          <form id="amap-settings-form">
+            <h3>高德配置</h3>
+            <p class="field-help">发行包使用 Windows 当前用户保护存储；页面只显示是否已配置，不回显保存值。</p>
+            <label for="amap-web-key">Web 服务 Key</label>
+            <input id="amap-web-key" type="password" autocomplete="new-password" />
+            <label for="amap-js-key">Web端（JS API）Key</label>
+            <input id="amap-js-key" type="password" autocomplete="new-password" />
+            <label for="amap-security-key">JS API 安全密钥</label>
+            <input id="amap-security-key" type="password" autocomplete="new-password" />
+            <button class="button quiet" type="submit">保存当前用户配置</button>
+            <p id="amap-settings-status" class="status-line" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
 
       <section class="map-section" aria-labelledby="map-heading">
         <div class="section-heading">
@@ -148,10 +208,19 @@
 
       <section class="list-section" aria-labelledby="restaurant-heading">
         <div class="section-heading">
-          <h2 id="restaurant-heading">餐厅名单</h2>
+          <h2 id="restaurant-heading">当前可选择</h2>
           <span id="count" class="count" aria-live="polite">正在读取…</span>
         </div>
         <div id="restaurants" class="restaurant-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="list-section archive-section" aria-labelledby="archive-heading">
+        <div class="section-heading">
+          <h2 id="archive-heading">餐厅档案</h2>
+          <span id="archive-count" class="count" aria-live="polite">正在读取…</span>
+        </div>
+        <p class="archive-help">归档不会删除餐厅，也不会清除已确认的位置；可继续查看、编辑或恢复。</p>
+        <div id="archived-restaurants" class="restaurant-grid" aria-live="polite"></div>
       </section>
     </main>
     <script src="/static/app.js" defer></script>

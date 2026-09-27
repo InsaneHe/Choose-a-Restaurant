@@ -1,5 +1,7 @@
 const listElement = document.querySelector("#restaurants");
 const countElement = document.querySelector("#count");
+const archiveListElement = document.querySelector("#archived-restaurants");
+const archiveCountElement = document.querySelector("#archive-count");
 const feedbackElement = document.querySelector("#feedback");
 const formElement = document.querySelector("#restaurant-form");
 const editorHeading = document.querySelector("#editor-heading");
@@ -7,6 +9,16 @@ const idInput = document.querySelector("#restaurant-id");
 const nameInput = document.querySelector("#name");
 const typeInput = document.querySelector("#type");
 const detailInput = document.querySelector("#detail");
+const tagInput = document.querySelector("#tag-input");
+const addTagButton = document.querySelector("#add-tag-button");
+const tagEditor = document.querySelector("#tag-editor");
+const dianpingShareInput = document.querySelector("#dianping-share-input");
+const parseDianpingButton = document.querySelector("#parse-dianping-button");
+const dianpingPreview = document.querySelector("#dianping-preview");
+const dianpingPreviewName = document.querySelector("#dianping-preview-name");
+const dianpingPreviewUrl = document.querySelector("#dianping-preview-url");
+const dianpingPreviewAddress = document.querySelector("#dianping-preview-address");
+const useDianpingButton = document.querySelector("#use-dianping-button");
 const dianpingUrlInput = document.querySelector("#dianping-url");
 const saveButton = document.querySelector("#save-button");
 const cancelButton = document.querySelector("#cancel-button");
@@ -41,6 +53,17 @@ const groupResults = document.querySelector("#group-results");
 const rankingList = document.querySelector("#ranking-list");
 const excludedList = document.querySelector("#excluded-list");
 const groupRandomResult = document.querySelector("#group-random-result");
+const runtimeMode = document.querySelector("#runtime-mode");
+const runtimeDataPath = document.querySelector("#runtime-data-path");
+const openDataDirectoryButton = document.querySelector("#open-data-directory-button");
+const restaurantImportFile = document.querySelector("#restaurant-import-file");
+const importRestaurantsButton = document.querySelector("#import-restaurants-button");
+const importStatus = document.querySelector("#import-status");
+const amapSettingsForm = document.querySelector("#amap-settings-form");
+const amapWebKey = document.querySelector("#amap-web-key");
+const amapJsKey = document.querySelector("#amap-js-key");
+const amapSecurityKey = document.querySelector("#amap-security-key");
+const amapSettingsStatus = document.querySelector("#amap-settings-status");
 
 let restaurantsCache = [];
 let activeRestaurant = null;
@@ -50,6 +73,10 @@ let mapMarkers = [];
 let participantCounter = 0;
 let latestGroupRankingId = null;
 let hasGroupRankingAttempt = false;
+let eligibilitySignature = null;
+let editingTags = [];
+let parsedDianpingResult = null;
+let dianpingShareAccepted = false;
 
 function setFeedback(message, kind = "success") {
   feedbackElement.textContent = message;
@@ -73,6 +100,36 @@ async function apiRequest(url, options = {}) {
     throw new Error(payload.detail || `请求失败（HTTP ${response.status}）`);
   }
   return payload;
+}
+
+async function loadRuntimeInfo() {
+  try {
+    const info = await apiRequest("/api/runtime/info");
+    runtimeMode.textContent =
+      info.mode === "packaged"
+        ? "发行包模式：名单保存在当前 Windows 用户目录，替换程序不会覆盖。"
+        : "源码开发模式：名单继续使用项目 data/restaurants.json。";
+    runtimeDataPath.textContent = info.data_path;
+  } catch (error) {
+    runtimeMode.textContent = `无法读取运行信息：${error.message}`;
+  }
+}
+
+async function loadAmapSettingsStatus() {
+  try {
+    const status = await apiRequest("/api/settings/amap");
+    const storageLabel =
+      status.storage === "windows_current_user"
+        ? "Windows 当前用户保护存储"
+        : "开发环境变量";
+    amapSettingsStatus.textContent = `${storageLabel}；Web 服务：${
+      status.web_service_configured ? "已配置" : "未配置"
+    }；JS API：${status.js_api_configured ? "已配置" : "未配置"}；安全密钥：${
+      status.js_security_configured ? "已配置" : "未配置"
+    }。`;
+  } catch (error) {
+    amapSettingsStatus.textContent = `配置状态读取失败：${error.message}`;
+  }
 }
 
 function appendText(parent, className, text) {
@@ -131,8 +188,66 @@ function selectRestaurantForLocation(restaurant) {
   document.querySelector(".map-section").scrollIntoView({ behavior: "smooth" });
 }
 
+function renderTagEditor() {
+  tagEditor.replaceChildren();
+  for (const tag of editingTags) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip editable";
+    const label = document.createElement("span");
+    label.textContent = tag;
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "tag-remove";
+    removeButton.textContent = "×";
+    removeButton.setAttribute("aria-label", `移除标签 ${tag}`);
+    removeButton.addEventListener("click", () => {
+      editingTags = editingTags.filter((item) => item !== tag);
+      renderTagEditor();
+    });
+    chip.append(label, removeButton);
+    tagEditor.append(chip);
+  }
+}
+
+function addPendingTag({ showEmptyError = true } = {}) {
+  const tag = tagInput.value.trim();
+  if (!tag) {
+    if (showEmptyError) {
+      setFeedback("标签不能为空。", "error");
+    }
+    return false;
+  }
+  if (!editingTags.includes(tag)) {
+    editingTags.push(tag);
+  }
+  tagInput.value = "";
+  renderTagEditor();
+  return true;
+}
+
+function clearDianpingPreview() {
+  parsedDianpingResult = null;
+  dianpingShareAccepted = false;
+  dianpingPreview.hidden = true;
+  dianpingPreviewName.textContent = "";
+  dianpingPreviewUrl.textContent = "";
+  dianpingPreviewAddress.textContent = "";
+}
+
+function renderDianpingPreview(result) {
+  parsedDianpingResult = result;
+  dianpingShareAccepted = false;
+  dianpingPreviewName.textContent = result.name_suggestion || "未能可信提取，请手工填写";
+  dianpingPreviewUrl.textContent = result.url;
+  dianpingPreviewAddress.textContent = result.address_hint || "未提取到明确地址线索";
+  dianpingPreview.hidden = false;
+}
+
 function resetEditor() {
   formElement.reset();
+  editingTags = [];
+  renderTagEditor();
+  clearDianpingPreview();
   idInput.value = "";
   editorHeading.textContent = "添加餐厅";
   saveButton.textContent = "添加到名单";
@@ -140,10 +255,14 @@ function resetEditor() {
 }
 
 function beginEdit(restaurant) {
+  clearDianpingPreview();
+  dianpingShareInput.value = "";
   idInput.value = String(restaurant.id);
   nameInput.value = restaurant.name;
   typeInput.value = restaurant.type;
   detailInput.value = restaurant.detail;
+  editingTags = [...(restaurant.tags || [])];
+  renderTagEditor();
   dianpingUrlInput.value = restaurant.dianping_url || "";
   editorHeading.textContent = `编辑 #${restaurant.id}`;
   saveButton.textContent = "保存修改";
@@ -170,20 +289,59 @@ async function removeRestaurant(restaurant) {
   }
 }
 
-function renderRestaurants(restaurants) {
-  restaurantsCache = restaurants;
-  listElement.replaceChildren();
-  countElement.textContent = `${restaurants.length} 家`;
+async function changeSelectionStatus(restaurant, selectionStatus) {
+  const archiving = selectionStatus === "archived";
+  const action = archiving ? "归档" : "恢复";
+  if (archiving && !window.confirm(`确定归档“${restaurant.name}”吗？`)) {
+    return;
+  }
+  const shouldRerank = hasGroupRankingAttempt;
+  try {
+    const saved = await apiRequest(
+      `/api/restaurants/${restaurant.id}/selection-status`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ selection_status: selectionStatus }),
+      },
+    );
+    randomResult.hidden = true;
+    invalidateGroupRanking(
+      archiving
+        ? "餐厅已归档，旧多人排名已失效。"
+        : "餐厅已恢复，旧多人排名已失效。",
+      { keepAttempt: shouldRerank },
+    );
+    if (activeRestaurant?.id === restaurant.id) {
+      activeRestaurant = saved;
+    }
+    await loadRestaurants();
+    if (shouldRerank) {
+      setFeedback(`已${action}“${restaurant.name}”，正在使用原参与者重新排名。`);
+      await runGroupRanking();
+    } else {
+      setFeedback(`已${action}“${restaurant.name}”。`);
+    }
+  } catch (error) {
+    setFeedback(error.message, "error");
+  }
+}
 
+function renderRestaurantCards(target, restaurants, archived) {
+  target.replaceChildren();
   if (restaurants.length === 0) {
-    appendText(listElement, "empty-state", "名单为空，请先添加一家餐厅。再点击抽签时也会得到明确的空名单提示。");
-    refreshMapMarkers();
+    appendText(
+      target,
+      "empty-state",
+      archived
+        ? "档案为空。归档后的餐厅会出现在这里。"
+        : "当前没有可选择的餐厅；单人随机和多人排名均不可用，可从档案恢复餐厅。",
+    );
     return;
   }
 
   for (const restaurant of restaurants) {
     const card = document.createElement("article");
-    card.className = "restaurant-card";
+    card.className = archived ? "restaurant-card archived" : "restaurant-card";
 
     const number = document.createElement("span");
     number.className = "restaurant-id";
@@ -196,6 +354,22 @@ function renderRestaurants(restaurants) {
 
     appendText(card, "restaurant-type", restaurant.type);
     appendText(card, "restaurant-detail", restaurant.detail);
+
+    if (restaurant.tags.length > 0) {
+      const tags = document.createElement("div");
+      tags.className = "restaurant-tags";
+      for (const tag of restaurant.tags) {
+        const chip = document.createElement("span");
+        chip.className = "tag-chip";
+        chip.textContent = tag;
+        tags.append(chip);
+      }
+      card.append(tags);
+    }
+
+    if (archived) {
+      appendText(card, "archive-badge", "已归档 · 不参与随机与多人排名");
+    }
 
     const locationBadge = document.createElement("span");
     locationBadge.className = `location-badge ${restaurant.location_status}`;
@@ -235,6 +409,13 @@ function renderRestaurants(restaurants) {
     deleteButton.type = "button";
     deleteButton.textContent = "删除";
     deleteButton.addEventListener("click", () => removeRestaurant(restaurant));
+    const statusButton = document.createElement("button");
+    statusButton.className = "text-button";
+    statusButton.type = "button";
+    statusButton.textContent = archived ? "恢复" : "归档";
+    statusButton.addEventListener("click", () =>
+      changeSelectionStatus(restaurant, archived ? "active" : "archived"),
+    );
     actions.append(locationButton);
     if (restaurant.location_status !== "pending_location") {
       const nearbyButton = document.createElement("button");
@@ -247,16 +428,44 @@ function renderRestaurants(restaurants) {
       });
       actions.append(nearbyButton);
     }
-    actions.append(editButton, deleteButton);
+    actions.append(editButton, statusButton, deleteButton);
     card.append(actions);
-    listElement.append(card);
+    target.append(card);
   }
+}
+
+function renderRestaurants(restaurants) {
+  restaurantsCache = restaurants;
+  const active = restaurants.filter(
+    (restaurant) => restaurant.selection_status !== "archived",
+  );
+  const archived = restaurants.filter(
+    (restaurant) => restaurant.selection_status === "archived",
+  );
+  countElement.textContent = `${active.length} 家`;
+  archiveCountElement.textContent = `${archived.length} 家`;
+  randomButton.disabled = active.length === 0;
+  renderRestaurantCards(listElement, active, false);
+  renderRestaurantCards(archiveListElement, archived, true);
   refreshMapMarkers();
 }
 
 async function loadRestaurants() {
   try {
     const restaurants = await apiRequest("/api/restaurants");
+    const currentSignature = restaurants
+      .map((restaurant) => `${restaurant.id}:${restaurant.selection_status}`)
+      .join("|");
+    if (
+      eligibilitySignature !== null &&
+      eligibilitySignature !== currentSignature &&
+      latestGroupRankingId !== null
+    ) {
+      invalidateGroupRanking(
+        "餐厅活跃状态已在文件中变化，旧多人排名已失效，请重新计算。",
+      );
+    }
+    eligibilitySignature = currentSignature;
     renderRestaurants(restaurants);
   } catch (error) {
     listElement.replaceChildren();
@@ -828,6 +1037,13 @@ formElement.addEventListener("submit", async (event) => {
   const restaurantType = typeInput.value.trim();
   const detail = detailInput.value.trim();
   const dianpingUrl = dianpingUrlInput.value.trim();
+  if (dianpingShareInput.value.trim() && !dianpingShareAccepted) {
+    setFeedback("请先解析并采用点评分享预览，再保存餐厅。", "error");
+    return;
+  }
+  if (tagInput.value.trim()) {
+    addPendingTag({ showEmptyError: false });
+  }
   if (!name) {
     const message = dianpingUrl
       ? "大众点评链接不会自动识别门店，请补填餐厅名称。"
@@ -846,6 +1062,7 @@ formElement.addEventListener("submit", async (event) => {
     type: restaurantType,
     detail,
     dianping_url: dianpingUrl || null,
+    tags: [...editingTags],
   };
   const editingId = idInput.value;
   try {
@@ -872,6 +1089,114 @@ formElement.addEventListener("submit", async (event) => {
 });
 
 cancelButton.addEventListener("click", resetEditor);
+addTagButton.addEventListener("click", () => addPendingTag());
+tagInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addPendingTag();
+  }
+});
+
+dianpingShareInput.addEventListener("input", () => {
+  clearDianpingPreview();
+});
+
+parseDianpingButton.addEventListener("click", async () => {
+  clearFeedback();
+  clearDianpingPreview();
+  const text = dianpingShareInput.value.trim();
+  if (!text) {
+    setFeedback("请粘贴大众点评商户链接或完整分享文字。", "error");
+    return;
+  }
+  try {
+    const result = await apiRequest("/api/dianping/parse", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    renderDianpingPreview(result);
+    setFeedback(
+      result.requires_name
+        ? "链接有效，但无法从链接可信取得店名；采用链接后请补填名称。"
+        : "已在本地解析分享内容；请核对预览并采用后再保存。",
+    );
+  } catch (error) {
+    setFeedback(`点评分享解析失败：${error.message}`, "error");
+  }
+});
+
+useDianpingButton.addEventListener("click", () => {
+  if (!parsedDianpingResult) {
+    setFeedback("请先解析点评分享。", "error");
+    return;
+  }
+  if (parsedDianpingResult.name_suggestion) {
+    nameInput.value = parsedDianpingResult.name_suggestion;
+  }
+  dianpingUrlInput.value = parsedDianpingResult.url;
+  dianpingShareAccepted = true;
+  if (parsedDianpingResult.requires_name && !nameInput.value.trim()) {
+    setFeedback("已采用商户链接；链接不能提供可信店名，请补填餐厅名称。", "error");
+    nameInput.focus();
+    return;
+  }
+  setFeedback("已采用解析结果；名称和链接仍可编辑，保存即表示确认。 ");
+});
+
+openDataDirectoryButton.addEventListener("click", async () => {
+  try {
+    await apiRequest("/api/runtime/open-data-directory", { method: "POST" });
+    setFeedback("已请求 Windows 打开当前名单所在目录。 ");
+  } catch (error) {
+    setFeedback(error.message, "error");
+  }
+});
+
+importRestaurantsButton.addEventListener("click", async () => {
+  const file = restaurantImportFile.files[0];
+  if (!file) {
+    importStatus.textContent = "请先选择一个 JSON 文件。";
+    return;
+  }
+  if (!window.confirm("导入会替换当前名单；程序将先自动备份。确定继续吗？")) {
+    return;
+  }
+  importRestaurantsButton.disabled = true;
+  try {
+    const result = await apiRequest("/api/data/import", {
+      method: "POST",
+      body: JSON.stringify({ json_text: await file.text() }),
+    });
+    importStatus.textContent = `已导入 ${result.count} 家；原名单备份在 ${result.backup_path}`;
+    restaurantImportFile.value = "";
+    invalidateGroupRanking("餐厅名单已导入，旧多人排名已失效。 ");
+    await loadRestaurants();
+  } catch (error) {
+    importStatus.textContent = `导入失败：${error.message}`;
+  } finally {
+    importRestaurantsButton.disabled = false;
+  }
+});
+
+amapSettingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    web_service_key: amapWebKey.value,
+    js_api_key: amapJsKey.value,
+    js_security_key: amapSecurityKey.value,
+  };
+  try {
+    await apiRequest("/api/settings/amap", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    amapSettingsForm.reset();
+    await loadAmapSettingsStatus();
+    setFeedback("高德配置已保存到当前 Windows 用户保护存储；刷新页面后加载地图。 ");
+  } catch (error) {
+    amapSettingsStatus.textContent = `保存失败：${error.message}`;
+  }
+});
 
 randomButton.addEventListener("click", async () => {
   clearFeedback();
@@ -923,3 +1248,6 @@ addParticipant();
 
 loadRestaurants();
 loadMapConfiguration();
+loadRuntimeInfo();
+loadAmapSettingsStatus();
+window.addEventListener("focus", loadRestaurants);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -92,12 +93,20 @@ def resolve_restaurant_location(
 
 
 def resolve_pending_restaurants(
-    provider: MapProvider, path: Path | str = DEFAULT_DATA_PATH
+    provider: MapProvider,
+    path: Path | str = DEFAULT_DATA_PATH,
+    *,
+    restaurant_ids: Collection[int] | None = None,
 ) -> list[dict[str, Any]]:
-    restaurant_ids = [restaurant["id"] for restaurant in load_restaurants(path)]
+    allowed_ids = set(restaurant_ids) if restaurant_ids is not None else None
+    pending_ids = [
+        restaurant["id"]
+        for restaurant in load_restaurants(path)
+        if allowed_ids is None or restaurant["id"] in allowed_ids
+    ]
     results: list[dict[str, Any]] = []
     consecutive_provider_errors = 0
-    for restaurant_id in restaurant_ids:
+    for restaurant_id in pending_ids:
         if consecutive_provider_errors >= 3:
             current = next(
                 (
